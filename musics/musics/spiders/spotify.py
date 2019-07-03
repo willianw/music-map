@@ -2,9 +2,8 @@
 
 from scrapy import Request
 from scrapy.shell import inspect_response
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlparse, parse_qs
 
-import requests
 import scrapy
 import base64
 import json
@@ -20,6 +19,14 @@ SPOTIFY_SECRET = os.environ['SPOTIFY_SECRET']
 class SpotifySpider(scrapy.Spider):
     name = 'spotify'
     allowed_domains = ['api.spotify.com', 'accounts.spotify.com']
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.failed_tracks = []
+        self.albums = []
+        self.artists = []
+        self.playlists = []
+        self.tracks = []
 
     def start_requests(self):
         base_url = 'https://accounts.spotify.com/api/token'
@@ -41,8 +48,7 @@ class SpotifySpider(scrapy.Spider):
         credentials = json.loads(response.body_as_unicode())
         self.token = credentials['access_token']
         print(self.token)
-        base_url = 'https://api.spotify.com/v1/recommendations/' \
-                   + 'available-genre-seeds'
+        base_url = 'https://api.spotify.com/v1/browse/categories'
         headers = {
             'Authorization': f"Bearer {self.token}",
             'Accept': "application/json",
@@ -53,19 +59,26 @@ class SpotifySpider(scrapy.Spider):
 
     def parse_categories(self, response):
         base_url = 'https://api.spotify.com/v1/browse/categories/{}/playlists'
-        genres = json.loads(response.body_as_unicode())['genres']
-        for genre in genres:
-            yield Request(base_url.format(genre), method='GET',
-                          callback=self.parse_playlists,
+        categories = json.loads(response.body_as_unicode())['categories']
+        next_page = categories['next']
+        if next_page:
+            yield Request(next_page, method='GET',
+                          callback=self.parse_categories,
                           headers=response.request.headers,
-                          meta={'genre': genre})
-    
-    def parse_playlists(self, response):
+                          meta=response.meta)
+        for category in categories['items']:
+            category_id = category['id']
+            yield Request(base_url.format(category_id), method='GET',
+                          callback=self.parse_category_playlists,
+                          headers=response.request.headers,
+                          meta={'category': category_id})
+
+    def parse_category_playlists(self, response):
         body = json.loads(response.body_as_unicode())['playlists']
         next_page = body['next']
         if next_page:
             yield Request(next_page, method='GET',
-                          callback=self.parse_playlists,
+                          callback=self.parse_category_playlists,
                           headers=response.request.headers,
                           meta=response.meta)
         for playlist in body['items']:
@@ -95,7 +108,14 @@ class SpotifySpider(scrapy.Spider):
 
     def parse_tracks(self, response):
         musics = json.loads(response.body_as_unicode())['audio_features']
-        for item in musics:
-            music = MusicsItem(item)
-            music['genre'] = response.meta['genre']
-            yield music
+        track_ids = parse_qs(urlparse(response.request.url).query)['ids']
+        for track, track_id in zip(musics, track_ids):
+            if track:
+                music = MusicsItem(track)
+                music['category'] = response.meta['category']
+                yield music
+            else:
+                self.failed_tracks.append(track_id)
+
+    def closed(self, reason):
+        print(f"{len(self.failed_tracks)} tracks failed because {reason}")

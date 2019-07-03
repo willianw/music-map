@@ -5,7 +5,11 @@
 # See documentation in:
 # https://doc.scrapy.org/en/latest/topics/spider-middleware.html
 
+from scrapy.downloadermiddlewares.retry import RetryMiddleware
+from scrapy.utils.response import response_status_message
 from scrapy import signals
+
+import time
 
 
 class MusicsSpiderMiddleware(object):
@@ -56,17 +60,7 @@ class MusicsSpiderMiddleware(object):
         spider.logger.info('Spider opened: %s' % spider.name)
 
 
-class MusicsDownloaderMiddleware(object):
-    # Not all methods need to be defined. If a method is not defined,
-    # scrapy acts as if the downloader middleware does not modify the
-    # passed objects.
-
-    @classmethod
-    def from_crawler(cls, crawler):
-        # This method is used by Scrapy to create your spiders.
-        s = cls()
-        crawler.signals.connect(s.spider_opened, signal=signals.spider_opened)
-        return s
+class MusicsDownloaderMiddleware(RetryMiddleware):
 
     def process_request(self, request, spider):
         # Called for each request that goes through the downloader
@@ -81,12 +75,17 @@ class MusicsDownloaderMiddleware(object):
         return None
 
     def process_response(self, request, response, spider):
-        # Called with the response returned from the downloader.
-
-        # Must either;
-        # - return a Response object
-        # - return a Request object
-        # - or raise IgnoreRequest
+        if request.meta.get('dont_retry', False):
+            return response
+        elif response.status == 429:
+            self.crawler.engine.pause()
+            time.sleep(60)
+            self.crawler.engine.unpause()
+            reason = response_status_message(response.status)
+            return self._retry(request, reason, spider) or response
+        elif response.status in self.retry_http_codes:
+            reason = response_status_message(response.status)
+            return self._retry(request, reason, spider) or response
         return response
 
     def process_exception(self, request, exception, spider):

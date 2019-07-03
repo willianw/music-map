@@ -28,4 +28,4 @@ class MusicsItem(scrapy.Item):
     analysis_url = Field()
     duration_ms = Field()
     time_signature = Field()
-    genre = Field()
+    category = Field()
